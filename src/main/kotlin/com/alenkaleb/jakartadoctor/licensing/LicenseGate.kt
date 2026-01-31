@@ -18,7 +18,7 @@ class LicenseGate(private val project: Project) {
 
         val stamp = facade.getConfirmationStamp(productCode) ?: return State.UNLICENSED
 
-        return if (facade.getConfirmationStamp(stamp) != null) State.LICENSED else State.UNLICENSED
+        return State.LICENSED
     }
 
     fun notifyUnlicensedOnce() {
