@@ -1,0 +1,64 @@
+<idea-plugin>
+    <id>com.alenkaleb.jakartadoctor</id>
+    <name>Jakarta Doctor</name>
+    <vendor email="suporte@seusite.com" url="https://seusite.com">Alen Kaleb</vendor>
+
+    <description><![CDATA[
+        Detecta e ajuda a migrar imports javax→jakarta (Java/Kotlin) + relatório de migração.
+    ]]></description>
+
+    <!-- FREEMIUM: optional="true" -->
+    <product-descriptor
+            code="PJAKARTADOCTOR"
+            release-date="20260126"
+            release-version="20261"
+            optional="true"/>
+
+    <version>2026.1.0</version>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends optional="true">org.jetbrains.kotlin</depends>
+
+    <!-- Ajuda a garantir licensing -->
+    <depends>com.intellij.marketplace</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <localInspection
+                shortName="JakartaImport"
+                displayName="Jakarta Doctor: migrate javax imports"
+                groupPath="Jakarta Doctor"
+                enabledByDefault="true"
+                level="WARNING"
+                implementationClass="com.alenkaleb.jakartadoctor.inspection.JakartaImportInspection"
+                cleanupTool="true"/>
+
+        <notificationGroup id="JakartaDoctor" displayType="BALLOON" isLogByDefault="false"/>
+    </extensions>
+
+    <actions>
+
+        <!-- Submenu no Tools com ícone -->
+        <group id="JakartaDoctor.ToolsMenu"
+               text="Jakarta Doctor"
+               description="Ferramentas para migração javax→jakarta"
+               popup="true"
+               icon="/icons/jakartaDoctor.svg">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+
+            <action id="JakartaDoctor.Action.GenerateReport"
+                    class="com.alenkaleb.jakartadoctor.actions.GenerateJakartaReportAction"
+                    text="Generate Jakarta Migration Report"
+                    description="Gera relatório Markdown com contagem por pacote"
+                    icon="/icons/jakartaDoctor.svg"/>
+
+            <action id="JakartaDoctor.Action.MigrateImports"
+                    class="com.alenkaleb.jakartadoctor.actions.MigrateJakartaImportsAction"
+                    text="Migrate Jakarta Imports (Batch)"
+                    description="Migra imports javax→jakarta no escopo selecionado"
+                    icon="/icons/jakartaDoctor.svg"/>
+
+        </group>
+
+    </actions>
+</idea-plugin>
