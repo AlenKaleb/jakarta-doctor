@@ -5,11 +5,8 @@ import com.intellij.codeInsight.intention.preview.IntentionPreviewInfo
 import com.intellij.codeInspection.LocalQuickFix
 import com.intellij.codeInspection.ProblemDescriptor
 import com.intellij.ide.highlighter.JavaFileType
-import com.intellij.notification.NotificationGroupManager
-import com.intellij.notification.NotificationType
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiImportStatementBase
 import com.intellij.psi.PsiImportStaticStatement
@@ -46,7 +43,7 @@ class ReplaceImportQuickFix(private val newImportRefRaw: String) : LocalQuickFix
             val gate = LicenseGate(project)
             val state = gate.state()
             if (state == LicenseGate.State.UNLICENSED) {
-                if (notifyUnlicensed) notifyUnlicensedOnce(project)
+                if (notifyUnlicensed) gate.notifyUnlicensedOnce()
                 return false
             }
             // UNKNOWN -> deixa passar
@@ -149,22 +146,4 @@ class ReplaceImportQuickFix(private val newImportRefRaw: String) : LocalQuickFix
             .removeSuffix(";")
             .trim()
 
-    private fun notifyUnlicensedOnce(project: Project) {
-        val key = UNLICENSED_NOTIFIED
-        if (project.getUserData(key) == true) return
-        project.putUserData(key, true)
-
-        NotificationGroupManager.getInstance()
-            .getNotificationGroup("JakartaDoctor")
-            .createNotification(
-                "Recurso pago",
-                "A migração automática em lote é parte do plano pago. (A inspeção continua grátis.)",
-                NotificationType.INFORMATION
-            )
-            .notify(project)
-    }
-
-    companion object {
-        private val UNLICENSED_NOTIFIED = Key.create<Boolean>("JakartaDoctor.unlicensed.notified")
-    }
 }
