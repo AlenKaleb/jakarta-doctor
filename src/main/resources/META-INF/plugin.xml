@@ -18,9 +18,11 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.java</depends>
-    <depends optional="true">org.jetbrains.kotlin</depends>
 
-    <!-- Ajuda a garantir licensing -->
+    <!-- ⚠️ Se você referencia classes do Kotlin (KtFile/KtImportDirective), NÃO deixe optional -->
+    <depends>org.jetbrains.kotlin</depends>
+
+    <!-- LicensingFacade etc. -->
     <depends>com.intellij.marketplace</depends>
 
     <extensions defaultExtensionNs="com.intellij">
@@ -37,8 +39,6 @@
     </extensions>
 
     <actions>
-
-        <!-- Submenu no Tools com ícone -->
         <group id="JakartaDoctor.ToolsMenu"
                text="Jakarta Doctor"
                description="Ferramentas para migração javax→jakarta"
@@ -57,8 +57,6 @@
                     text="Migrate Jakarta Imports (Batch)"
                     description="Migra imports javax→jakarta no escopo selecionado"
                     icon="/icons/jakartaDoctor.svg"/>
-
         </group>
-
     </actions>
 </idea-plugin>
