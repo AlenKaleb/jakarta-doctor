@@ -3,25 +3,33 @@
     <name>Jakarta Doctor</name>
     <vendor email="kalebanjos@gmail.com" url="https://github.com/AlenKaleb">Alen Kaleb</vendor>
 
-    <idea-version since-build="243.0" until-build=""/>
-
-    <description><![CDATA[
-        Detecta e ajuda a migrar imports javax→jakarta (Java/Kotlin) + relatório de migração.
-    ]]></description>
-
-    <change-notes><![CDATA[
-        <p><b>2026.1.0</b></p>
-        <ul>
-          <li>Initial release: inspection + quick-fix + batch action + migration report.</li>
-        </ul>
-    ]]></change-notes>
+    <idea-version since-build="243.0" until-build="243.*"/>
 
     <version>2026.1.0</version>
 
+    <description><![CDATA[Spring Boot 3 Migration Assistant. Inspeções e ações em lote para migrar javax → jakarta, checar configs e aplicar quick-fixes.
+<br/>
+<ul>
+  <li>Inspeções: javax → jakarta</li>
+  <li>Checks de configs</li>
+  <li>Warnings e quick-fixes</li>
+</ul>
+]]></description>
+
+    <change-notes><![CDATA[
+<p><b>2026.1.0</b></p>
+<ul>
+  <li>Initial release: inspection + quick-fix + batch action + migration report.</li>
+</ul>
+]]></change-notes>
+
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.java</depends>
-
     <depends>org.jetbrains.kotlin</depends>
+
+    <extensions defaultExtensionNs="org.jetbrains.kotlin">
+        <supportsKotlinPluginMode>K1</supportsKotlinPluginMode>
+    </extensions>
 
     <extensions defaultExtensionNs="com.intellij">
         <localInspection
