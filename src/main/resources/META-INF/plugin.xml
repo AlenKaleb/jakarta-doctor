@@ -1,29 +1,27 @@
 <idea-plugin>
     <id>com.alenkaleb.jakartadoctor</id>
     <name>Jakarta Doctor</name>
-    <vendor email="suporte@seusite.com" url="https://seusite.com">Alen Kaleb</vendor>
+    <vendor email="kalebanjos@gmail.com" url="https://github.com/AlenKaleb">Alen Kaleb</vendor>
+
+    <idea-version since-build="243.0" until-build=""/>
 
     <description><![CDATA[
         Detecta e ajuda a migrar imports javax→jakarta (Java/Kotlin) + relatório de migração.
     ]]></description>
 
-    <!-- FREEMIUM: optional="true" -->
-    <product-descriptor
-            code="PJAKARTADOCTOR"
-            release-date="20260126"
-            release-version="20261"
-            optional="true"/>
+    <change-notes><![CDATA[
+        <p><b>2026.1.0</b></p>
+        <ul>
+          <li>Initial release: inspection + quick-fix + batch action + migration report.</li>
+        </ul>
+    ]]></change-notes>
 
     <version>2026.1.0</version>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.java</depends>
 
-    <!-- ⚠️ Se você referencia classes do Kotlin (KtFile/KtImportDirective), NÃO deixe optional -->
     <depends>org.jetbrains.kotlin</depends>
-
-    <!-- LicensingFacade etc. -->
-    <depends>com.intellij.marketplace</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <localInspection
