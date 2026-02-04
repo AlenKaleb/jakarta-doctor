@@ -98,6 +98,7 @@ class JakartaImportInspection : AbstractBaseUastLocalInspectionTool() {
 
         val facade = JavaPsiFacade.getInstance(element.project)
         if (cleaned.endsWith(".*")) {
+            if (facade.findClass(base, scope) != null) return true
             return packageHasTypes(facade, base, scope)
         }
 
