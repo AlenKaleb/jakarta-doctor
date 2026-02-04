@@ -1,10 +1,13 @@
 package com.alenkaleb.jakartadoctor.inspection
 
 import com.alenkaleb.jakartadoctor.licensing.LicenseGate
+import com.alenkaleb.jakartadoctor.util.JakartaClasspathChecker
 import com.intellij.codeInsight.intention.preview.IntentionPreviewInfo
 import com.intellij.codeInspection.LocalQuickFix
 import com.intellij.codeInspection.ProblemDescriptor
 import com.intellij.ide.highlighter.JavaFileType
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFileFactory
@@ -15,26 +18,42 @@ import org.jetbrains.kotlin.idea.KotlinFileType
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtImportDirective
 
-class ReplaceImportQuickFix(private val newImportRefRaw: String) : LocalQuickFix {
+/**
+ * Quick fix to replace a javax.* import with its jakarta.* equivalent.
+ *
+ * @param newImportRefRaw The target jakarta import reference
+ * @param classpathWarning Whether the classpath check failed (jakarta not found in module)
+ */
+class ReplaceImportQuickFix(
+    private val newImportRefRaw: String,
+    private val classpathWarning: Boolean = false
+) : LocalQuickFix {
 
     override fun getFamilyName(): String = "Migrar imports javax→jakarta"
-    override fun getName(): String = "Migrar import para $newImportRefRaw"
+    override fun getName(): String {
+        return if (classpathWarning) {
+            "Migrar import para $newImportRefRaw (Jakarta não encontrado no classpath)"
+        } else {
+            "Migrar import para $newImportRefRaw"
+        }
+    }
     override fun startInWriteAction(): Boolean = false
 
     override fun generatePreview(project: Project, previewDescriptor: ProblemDescriptor): IntentionPreviewInfo {
-        val ok = applyInternal(project, previewDescriptor, enforceLicense = false, notifyUnlicensed = false)
+        val ok = applyInternal(project, previewDescriptor, enforceLicense = false, notifyUnlicensed = false, checkClasspath = false)
         return if (ok) IntentionPreviewInfo.DIFF else IntentionPreviewInfo.EMPTY
     }
 
     override fun applyFix(project: Project, descriptor: ProblemDescriptor) {
-        applyInternal(project, descriptor, enforceLicense = true, notifyUnlicensed = true)
+        applyInternal(project, descriptor, enforceLicense = true, notifyUnlicensed = true, checkClasspath = true)
     }
 
     private fun applyInternal(
         project: Project,
         descriptor: ProblemDescriptor,
         enforceLicense: Boolean,
-        notifyUnlicensed: Boolean
+        notifyUnlicensed: Boolean,
+        checkClasspath: Boolean
     ): Boolean {
         val element = descriptor.psiElement ?: return false
         val file = element.containingFile ?: return false
@@ -51,6 +70,20 @@ class ReplaceImportQuickFix(private val newImportRefRaw: String) : LocalQuickFix
 
         val normalized = normalizeImportRef(newImportRefRaw)
         if (normalized.isBlank()) return false
+
+        // ✅ Re-check classpath before applying the fix to ensure jakarta is available
+        if (checkClasspath && !JakartaClasspathChecker.isJakartaAvailable(element, normalized)) {
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup("JakartaDoctor")
+                .createNotification(
+                    "Jakarta não encontrado no classpath",
+                    "O pacote '$normalized' não foi encontrado no classpath do módulo. " +
+                            "Adicione a dependência Jakarta EE correspondente antes de migrar.",
+                    NotificationType.WARNING
+                )
+                .notify(project)
+            return false
+        }
 
         // ✅ Preserva .* conforme o import ORIGINAL (Java/Kotlin)
         val effectiveRef = when (element) {

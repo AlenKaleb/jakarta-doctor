@@ -1,6 +1,8 @@
 package com.alenkaleb.jakartadoctor.actions
 
 import com.alenkaleb.jakartadoctor.licensing.LicenseGate
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
@@ -19,6 +21,14 @@ import com.intellij.psi.PsiJavaFile
 import com.intellij.psi.PsiManager
 import org.jetbrains.kotlin.psi.KtFile
 
+/**
+ * Batch action to migrate all javax.* imports to jakarta.* equivalents in the selected scope.
+ *
+ * This action performs the following safety checks before applying migrations:
+ * 1. Verifies each javax import is one that was migrated to jakarta in Jakarta EE 9+
+ * 2. Checks if the target jakarta.* package/class is available in the module classpath
+ * 3. Provides a summary notification of migrated and skipped imports
+ */
 class MigrateJakartaImportsAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
@@ -37,18 +47,37 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
             object : Task.Backgroundable(project, "Jakarta Doctor: migrate imports", true) {
                 override fun run(indicator: ProgressIndicator) {
                     val files = collectCandidateFiles(project, selection, indicator)
-                    if (files.isEmpty()) return
+                    if (files.isEmpty()) {
+                        showNotification(
+                            project,
+                            "Nenhum arquivo encontrado",
+                            "Não foram encontrados arquivos com imports javax.* no escopo selecionado.",
+                            NotificationType.INFORMATION
+                        )
+                        return
+                    }
 
                     // 1 undo. (Se ficar pesado, dá pra chunkar em lotes)
                     WriteCommandAction.writeCommandAction(project)
                         .withName("Jakarta Doctor: migrate imports")
                         .run<RuntimeException> {
-                            applyFixes(project, files, indicator)
+                            val result = applyFixes(project, files, indicator)
+                            showMigrationResult(project, result)
                         }
                 }
             }
         )
     }
+
+    /**
+     * Result of the batch migration operation.
+     */
+    private data class BatchMigrationResult(
+        val filesProcessed: Int,
+        val totalMigrated: Int,
+        val totalSkipped: Int,
+        val skippedReasons: List<String>
+    )
 
     private fun collectCandidateFiles(
         project: Project,
@@ -59,7 +88,7 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
             if (selection.isNotEmpty()) selection
             else ProjectRootManager.getInstance(project).contentRoots.toList()
 
-        // 1) coleta “bruta” por extensão (barato, sem índice)
+        // 1) coleta "bruta" por extensão (barato, sem índice)
         val rough = ArrayList<VirtualFile>(2048)
         for (root in roots) {
             if (indicator.isCanceled) return emptyList()
@@ -68,7 +97,7 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
 
         if (rough.isEmpty()) return emptyList()
 
-        // 2) filtra por “isInContent” em uma ReadAction curta (evita crash de threading)
+        // 2) filtra por "isInContent" em uma ReadAction curta (evita crash de threading)
         val inContent = ReadAction.compute<List<VirtualFile>, RuntimeException> {
             val index = ProjectFileIndex.getInstance(project)
             rough.filter { vf -> index.isInContent(vf) }
@@ -110,14 +139,22 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
         if (isCode) out.add(vf)
     }
 
-    private fun applyFixes(project: Project, files: List<VirtualFile>, indicator: ProgressIndicator) {
+    private fun applyFixes(
+        project: Project,
+        files: List<VirtualFile>,
+        indicator: ProgressIndicator
+    ): BatchMigrationResult {
         val psiManager = PsiManager.getInstance(project)
 
         var processed = 0
+        var totalMigrated = 0
+        var totalSkipped = 0
+        val allSkippedReasons = mutableListOf<String>()
+
         val total = files.size.coerceAtLeast(1)
 
         for (vf in files) {
-            if (indicator.isCanceled) return
+            if (indicator.isCanceled) break
             indicator.text = "Migrating imports: ${vf.presentableUrl}"
             indicator.fraction = processed.toDouble() / total
 
@@ -131,11 +168,56 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
             }
 
             when (psiFile) {
-                is PsiJavaFile -> JavaImportMigrator.migrate(psiFile)
-                is KtFile -> KotlinImportMigrator.migrate(psiFile)
+                is PsiJavaFile -> {
+                    val result = JavaImportMigrator.migrate(psiFile, checkClasspath = true)
+                    totalMigrated += result.migratedCount
+                    totalSkipped += result.skippedCount
+                    allSkippedReasons.addAll(result.skippedReasons)
+                }
+                is KtFile -> {
+                    val result = KotlinImportMigrator.migrate(psiFile, checkClasspath = true)
+                    totalMigrated += result.migratedCount
+                    totalSkipped += result.skippedCount
+                    allSkippedReasons.addAll(result.skippedReasons)
+                }
             }
 
             processed++
         }
+
+        return BatchMigrationResult(processed, totalMigrated, totalSkipped, allSkippedReasons)
+    }
+
+    private fun showMigrationResult(project: Project, result: BatchMigrationResult) {
+        val title = if (result.totalMigrated > 0) "Migração concluída" else "Nenhuma migração realizada"
+
+        val message = buildString {
+            append("Arquivos processados: ${result.filesProcessed}. ")
+            append("Imports migrados: ${result.totalMigrated}. ")
+            if (result.totalSkipped > 0) {
+                append("Imports ignorados: ${result.totalSkipped} (Jakarta não encontrado no classpath).")
+            }
+        }
+
+        val type = when {
+            result.totalMigrated > 0 && result.totalSkipped == 0 -> NotificationType.INFORMATION
+            result.totalMigrated > 0 && result.totalSkipped > 0 -> NotificationType.WARNING
+            result.totalSkipped > 0 -> NotificationType.WARNING
+            else -> NotificationType.INFORMATION
+        }
+
+        showNotification(project, title, message, type)
+    }
+
+    private fun showNotification(
+        project: Project,
+        title: String,
+        message: String,
+        type: NotificationType
+    ) {
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup("JakartaDoctor")
+            .createNotification(title, message, type)
+            .notify(project)
     }
 }

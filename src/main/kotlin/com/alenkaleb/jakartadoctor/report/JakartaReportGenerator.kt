@@ -1,5 +1,6 @@
 package com.alenkaleb.jakartadoctor.report
 
+import com.alenkaleb.jakartadoctor.util.JakartaClasspathChecker
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
@@ -15,6 +16,13 @@ import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
+/**
+ * Generates migration reports for javax.* to jakarta.* migrations.
+ *
+ * This generator only counts imports that are eligible for migration:
+ * - Verifies the javax import is one that was migrated to jakarta in Jakarta EE 9+
+ * - Excludes non-migratable packages like javax.sql, javax.xml, etc.
+ */
 object JakartaReportGenerator {
 
     data class PkgStats(var files: Int = 0, var imports: Int = 0)
@@ -27,10 +35,12 @@ object JakartaReportGenerator {
     )
 
     /**
-     * Conta imports que COMEÇAM com "javax." em arquivos Java/Kotlin dentro dos content roots.
+     * Counts migratable javax.* imports in Java/Kotlin files within content roots.
+     * Only counts imports that are eligible for migration to jakarta.*.
      * - Java: conta "import javax.foo.Bar;" e "import javax.foo.*;"
      * - Kotlin: conta "import javax.foo.Bar" e "import javax.foo.*"
      * - Ignora static import em Java (MVP)
+     * - Ignora pacotes javax que permanecem em Jakarta EE 9+ (javax.sql, javax.xml, etc.)
      */
     fun generate(project: Project): ReportResult {
         val files = collectCandidateFiles(project)
@@ -136,6 +146,10 @@ object JakartaReportGenerator {
         // ✅ só imports normais (não inclui import static)
         for (stmt in importList.importStatements) {
             val q = stmt.importReference?.qualifiedName ?: continue
+
+            // ✅ Only count migratable imports (exclude javax.sql, javax.xml, etc.)
+            if (!JakartaClasspathChecker.isMigratableImport(q)) continue
+
             val rendered = if (stmt.isOnDemand) "$q.*" else q
 
             if (rendered.startsWith("javax.")) hits++
@@ -149,6 +163,10 @@ object JakartaReportGenerator {
 
         for (imp in importList.imports) {
             val q = imp.importedFqName?.asString() ?: continue
+
+            // ✅ Only count migratable imports (exclude javax.sql, javax.xml, etc.)
+            if (!JakartaClasspathChecker.isMigratableImport(q)) continue
+
             val rendered = if (imp.isAllUnder) "$q.*" else q
 
             if (rendered.startsWith("javax.")) hits++
@@ -170,13 +188,13 @@ object JakartaReportGenerator {
         appendLine("- Project: `$projectName`")
         appendLine("- Generated at: `$now`")
         appendLine("- Scanned files: `$scannedFiles`")
-        appendLine("- Files with javax imports: `$filesWithFindings`")
-        appendLine("- Total javax imports found: `$totalImports`")
+        appendLine("- Files with migratable javax imports: `$filesWithFindings`")
+        appendLine("- Total migratable javax imports found: `$totalImports`")
         appendLine()
 
         appendLine("## By package")
         appendLine()
-        appendLine("| Package | Files | javax imports |")
+        appendLine("| Package | Files | Migratable javax imports |")
         appendLine("|---|---:|---:|")
 
         val sorted = byPackage.toList().sortedByDescending { it.second.imports }
@@ -186,8 +204,10 @@ object JakartaReportGenerator {
 
         appendLine()
         appendLine("## Notes")
-        appendLine("- Counts are based on `import` statements starting with `javax.`.")
+        appendLine("- Counts are based on `import` statements eligible for javax→jakarta migration.")
+        appendLine("- Only migratable packages are counted (javax.persistence, javax.servlet, etc.).")
+        appendLine("- Non-migratable packages (javax.sql, javax.xml, etc.) are excluded.")
         appendLine("- Star imports (`.*`) are counted as 1 import.")
-        appendLine("- Static imports may be ignored (MVP).")
+        appendLine("- Static imports are ignored.")
     }
 }

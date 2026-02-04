@@ -1,8 +1,16 @@
 <html>
 <body>
-Detecta imports <code>javax.*</code> e sugere o equivalente <code>jakarta.*</code> quando houver mapeamento conhecido.
+Detecta imports <code>javax.*</code> elegíveis para migração para <code>jakarta.*</code> (Jakarta EE 9+).
 <p>
-    No plano pago, o quick-fix aplica a migração automaticamente.
+    <b>Verificações de segurança:</b>
+    <ul>
+        <li>Verifica se o pacote javax.* é um que foi migrado para jakarta.* no Jakarta EE 9+</li>
+        <li>Checa se a biblioteca jakarta.* correspondente está disponível no classpath do módulo</li>
+        <li>Pacotes javax que permanecem no Jakarta EE 9+ (javax.sql, javax.xml, etc.) não são migrados</li>
+    </ul>
+</p>
+<p>
+    O quick-fix só será aplicado se a biblioteca Jakarta correspondente estiver no classpath.
 </p>
 </body>
 </html>
