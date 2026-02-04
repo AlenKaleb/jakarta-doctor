@@ -24,10 +24,10 @@ import org.jetbrains.kotlin.psi.KtFile
 /**
  * Batch action to migrate all javax.* imports to jakarta.* equivalents in the selected scope.
  *
- * This action performs the following safety checks before applying migrations:
- * 1. Verifies each javax import is one that was migrated to jakarta in Jakarta EE 9+
- * 2. Checks if the target jakarta.* package/class is available in the module classpath
- * 3. Provides a summary notification of migrated and skipped imports
+ * Safety checks:
+ * 1) Only migrates allow-listed javax.* namespaces
+ * 2) Verifies target jakarta.* is available in the module classpath
+ * 3) Provides a summary notification
  */
 class MigrateJakartaImportsAction : AnAction(), DumbAware {
 
@@ -57,7 +57,7 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
                         return
                     }
 
-                    // 1 undo. (Se ficar pesado, dá pra chunkar em lotes)
+                    // 1 undo (um comando único)
                     WriteCommandAction.writeCommandAction(project)
                         .withName("Jakarta Doctor: migrate imports")
                         .run<RuntimeException> {
@@ -69,9 +69,6 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
         )
     }
 
-    /**
-     * Result of the batch migration operation.
-     */
     private data class BatchMigrationResult(
         val filesProcessed: Int,
         val totalMigrated: Int,
@@ -94,15 +91,13 @@ class MigrateJakartaImportsAction : AnAction(), DumbAware {
             if (indicator.isCanceled) return emptyList()
             collectCandidatesFromRoot(root, indicator, rough)
         }
-
         if (rough.isEmpty()) return emptyList()
 
-        // 2) filtra por "isInContent" em uma ReadAction curta (evita crash de threading)
+        // 2) filtra por "isInContent" em uma ReadAction curta
         val inContent = ReadAction.compute<List<VirtualFile>, RuntimeException> {
             val index = ProjectFileIndex.getInstance(project)
             rough.filter { vf -> index.isInContent(vf) }
         }
-
         if (inContent.isEmpty()) return emptyList()
 
         // 3) filtro rápido por texto "javax." (VFS loadText; sem PSI)

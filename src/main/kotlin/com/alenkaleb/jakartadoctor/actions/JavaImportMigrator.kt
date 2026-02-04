@@ -82,7 +82,6 @@ object JavaImportMigrator {
     }
 
     private fun ensureJavaWildcardIfNeeded(stmt: PsiImportStatement, suggested: String): String {
-        // suggested pode vir sem alias (Java não tem), mas pode vir com ".*"
         val base = suggested.split(" as ", limit = 2)[0].trim()
         return if (stmt.isOnDemand && !base.endsWith(".*")) "$base.*" else base
     }

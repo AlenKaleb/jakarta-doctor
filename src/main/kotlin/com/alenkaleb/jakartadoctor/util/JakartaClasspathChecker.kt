@@ -1,26 +1,23 @@
 package com.alenkaleb.jakartadoctor.util
 
 import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.IndexNotReadyException
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiPackage
+import com.intellij.psi.search.GlobalSearchScope
 
 /**
  * Utility class to check the module classpath for Jakarta EE support.
  *
- * Before applying any javax→jakarta migration, we must verify that:
- * 1. The target jakarta.* class/package is actually resolvable in the module classpath
- * 2. The javax.* import is one that was migrated to jakarta.* in Jakarta EE 9+
- *
- * Some javax packages remain unchanged in Jakarta EE 9+, such as:
- * - javax.sql (remains javax.sql)
- * - javax.naming (remains javax.naming)
- * - javax.xml (mostly remains javax.xml)
- * - javax.crypto (remains javax.crypto)
- * - javax.net (remains javax.net)
- * - javax.security.auth (remains javax.security.auth)
- * - javax.management (remains javax.management)
- *
- * This checker ensures we only suggest migrations that are safe and will resolve.
+ * Safety rules:
+ * 1) Only migrate allow-listed Java EE/Jakarta EE namespaces (javax.* -> jakarta.*).
+ * 2) Never migrate Java SE namespaces that remain javax.* (e.g., javax.sql, javax.xml.parsers, etc.).
+ * 3) Only suggest migration if the jakarta target is resolvable in the module classpath.
+ * 4) Be resilient in dumb mode (indexes not ready).
  */
 object JakartaClasspathChecker {
 
@@ -28,41 +25,47 @@ object JakartaClasspathChecker {
      * Known javax packages that were migrated to jakarta in Jakarta EE 9+.
      * Only these prefixes should be migrated.
      */
-    val MIGRATABLE_JAVAX_PREFIXES = setOf(
-        "javax.persistence",
-        "javax.validation",
-        "javax.servlet",
-        "javax.annotation",
-        "javax.ws.rs",
-        "javax.inject",
-        "javax.enterprise",
-        "javax.json",
-        "javax.websocket",
-        "javax.faces",
-        "javax.mail",
-        "javax.jms",
-        "javax.batch",
-        "javax.resource",
-        "javax.transaction",
-        "javax.ejb",
+    val MIGRATABLE_JAVAX_PREFIXES: Set<String> = setOf(
         "javax.activation",
+        "javax.annotation",
+        "javax.batch",
+        "javax.ejb",
         "javax.el",
+        "javax.enterprise",
+        "javax.faces",
+        "javax.inject",
         "javax.interceptor",
-        "javax.security.enterprise"
+        "javax.jms",
+        "javax.json",
+        "javax.mail",
+        "javax.persistence",
+        "javax.resource",
+        "javax.security.enterprise",
+        "javax.servlet",
+        "javax.transaction",
+        "javax.validation",
+        "javax.websocket",
+        "javax.ws.rs",
+
+        // Java EE APIs that were under javax.xml.* and DID migrate:
+        "javax.xml.bind",
+        "javax.xml.soap",
+        "javax.xml.ws"
     )
 
     /**
-     * Known javax packages that remain as javax.* even in Jakarta EE 9+.
+     * Known javax packages that remain as javax.* (Java SE or not migrated).
      * These should NEVER be migrated.
+     *
+     * IMPORTANT: Do NOT put "javax.xml" as a whole here, because some subpackages migrated
+     * (e.g., javax.xml.bind -> jakarta.xml.bind).
      */
-    val NON_MIGRATABLE_JAVAX_PREFIXES = setOf(
+    val NON_MIGRATABLE_JAVAX_PREFIXES: Set<String> = setOf(
+        // Clearly Java SE:
         "javax.sql",
         "javax.naming",
-        "javax.xml",
         "javax.crypto",
         "javax.net",
-        "javax.security.auth",
-        "javax.security.cert",
         "javax.management",
         "javax.rmi",
         "javax.swing",
@@ -72,118 +75,147 @@ object JakartaClasspathChecker {
         "javax.accessibility",
         "javax.tools",
         "javax.lang.model",
-        "javax.script"
+        "javax.script",
+        "javax.security.auth",
+        "javax.security.cert",
+
+        // Java SE XML packages (remain javax.*):
+        "javax.xml.catalog",
+        "javax.xml.datatype",
+        "javax.xml.namespace",
+        "javax.xml.parsers",
+        "javax.xml.stream",
+        "javax.xml.transform",
+        "javax.xml.validation",
+        "javax.xml.xpath",
+        "javax.xml.crypto",
+
+        // Java SE annotation processing (NOT Jakarta EE):
+        "javax.annotation.processing",
+
+        // XA is Java SE module (java.transaction.xa) and does NOT migrate to jakarta.*:
+        "javax.transaction.xa"
     )
+
+    /**
+     * Normalizes an import-like string:
+     * - trims
+     * - removes "import"/"import static"
+     * - drops alias (Kotlin "as X") by taking the first token
+     * - drops trailing ';'
+     */
+    private fun normalizeImportText(raw: String): String {
+        val s = raw.trim()
+            .removePrefix("import")
+            .trim()
+            .removePrefix("static")
+            .trim()
+        val firstToken = s.split(Regex("\\s+")).firstOrNull().orEmpty()
+        return firstToken.removeSuffix(";").trim()
+    }
+
+    private fun isPrefixedByAny(fqn: String, prefixes: Set<String>): Boolean =
+        prefixes.any { p -> fqn == p || fqn.startsWith("$p.") }
 
     /**
      * Checks if a given javax import is safe to migrate (i.e., it's one of the packages
      * that was migrated from javax to jakarta in Jakarta EE 9+).
-     *
-     * @param javaxImport The fully qualified javax import (e.g., "javax.persistence.Entity")
-     * @return true if this import can potentially be migrated to jakarta
      */
-    fun isMigratableImport(javaxImport: String): Boolean {
-        // First check if it's explicitly non-migratable
-        if (NON_MIGRATABLE_JAVAX_PREFIXES.any { prefix ->
-                javaxImport == prefix || javaxImport.startsWith("$prefix.")
-            }) {
-            return false
-        }
+    fun isMigratableImport(javaxImportRaw: String): Boolean {
+        val javaxImport = normalizeImportText(javaxImportRaw)
+        val base = javaxImport.removeSuffix(".*")
 
-        // Check if it's explicitly migratable
-        return MIGRATABLE_JAVAX_PREFIXES.any { prefix ->
-            javaxImport == prefix || javaxImport.startsWith("$prefix.")
+        if (!base.startsWith("javax.")) return false
+
+        // Non-migratable wins (blocks ambiguous namespaces like javax.annotation.processing)
+        if (isPrefixedByAny(base, NON_MIGRATABLE_JAVAX_PREFIXES)) return false
+
+        return isPrefixedByAny(base, MIGRATABLE_JAVAX_PREFIXES)
+    }
+
+    private fun moduleScopeFor(element: PsiElement): GlobalSearchScope? {
+        val module = ModuleUtilCore.findModuleForPsiElement(element) ?: return null
+        val vf = element.containingFile?.virtualFile
+        val includeTests =
+            vf != null && ProjectFileIndex.getInstance(module.project).isInTestSourceContent(vf)
+
+        return GlobalSearchScope.moduleWithDependenciesAndLibrariesScope(module, includeTests)
+    }
+
+    private fun <T> safeIndexCall(project: Project, block: () -> T): T? {
+        if (DumbService.isDumb(project)) return null
+        return try {
+            block()
+        } catch (_: IndexNotReadyException) {
+            null
         }
     }
 
     /**
      * Checks if the target jakarta.* class/package is resolvable in the module's classpath.
-     *
-     * @param element A PSI element from the file (used to determine the module)
-     * @param jakartaFqn The fully qualified name of the jakarta class/package to check
-     * @return true if the jakarta class/package is resolvable in the module classpath
      */
-    fun isJakartaAvailable(element: PsiElement, jakartaFqn: String): Boolean {
+    fun isJakartaAvailable(element: PsiElement, jakartaFqnRaw: String): Boolean {
         val module = ModuleUtilCore.findModuleForPsiElement(element) ?: return false
         val project = module.project
+        val scope = moduleScopeFor(element) ?: return false
         val facade = JavaPsiFacade.getInstance(project)
-        val scope = module.moduleWithDependenciesAndLibrariesScope
 
-        // Handle wildcard imports (e.g., "jakarta.persistence.*")
+        val jakartaFqn = normalizeImportText(jakartaFqnRaw)
         val fqnToCheck = jakartaFqn.removeSuffix(".*")
 
-        // Try to find the class or package
-        val psiClass = facade.findClass(fqnToCheck, scope)
-        if (psiClass != null) {
-            return true
-        }
+        return safeIndexCall(project) {
+            // 1) Class resolve
+            facade.findClass(fqnToCheck, scope)?.let { return@safeIndexCall true }
 
-        // If it's a package reference, try to find the package
-        val psiPackage = facade.findPackage(fqnToCheck)
-        if (psiPackage != null) {
-            // Check if the package has any classes in the module scope
-            val classes = psiPackage.getClasses(scope)
-            if (classes.isNotEmpty()) {
-                return true
-            }
-            // Also check for subpackages
-            val subPackages = psiPackage.getSubPackages(scope)
-            if (subPackages.isNotEmpty()) {
-                return true
-            }
-        }
+            // 2) Package resolve
+            val pkg: PsiPackage = facade.findPackage(fqnToCheck) ?: return@safeIndexCall false
 
-        return false
+            // directories/classes/subpackages in this module scope
+            pkg.getDirectories(scope).isNotEmpty() ||
+                    pkg.getClasses(scope).isNotEmpty() ||
+                    pkg.getSubPackages(scope).isNotEmpty()
+        } ?: false
     }
 
     /**
-     * Checks if any Jakarta EE library is present in the module's classpath.
-     * This is a quick check to determine if the module is likely a Jakarta EE project.
-     *
-     * @param element A PSI element from the file (used to determine the module)
-     * @return true if any Jakarta EE library is found in the module classpath
+     * Quick signal: any common Jakarta EE type resolvable in module scope?
      */
     fun hasAnyJakartaInClasspath(element: PsiElement): Boolean {
         val module = ModuleUtilCore.findModuleForPsiElement(element) ?: return false
         val project = module.project
+        val scope = moduleScopeFor(element) ?: return false
         val facade = JavaPsiFacade.getInstance(project)
-        val scope = module.moduleWithDependenciesAndLibrariesScope
 
-        // Check for common Jakarta EE packages
-        val commonJakartaPackages = listOf(
-            "jakarta.persistence",
-            "jakarta.validation",
-            "jakarta.servlet",
-            "jakarta.annotation",
-            "jakarta.ws.rs",
-            "jakarta.inject",
-            "jakarta.enterprise.context"
+        val probes = listOf(
+            "jakarta.persistence.Entity",
+            "jakarta.validation.Constraint",
+            "jakarta.servlet.Servlet",
+            "jakarta.annotation.PostConstruct",
+            "jakarta.ws.rs.Path",
+            "jakarta.inject.Inject",
+            "jakarta.enterprise.context.ApplicationScoped"
         )
 
-        return commonJakartaPackages.any { pkg ->
-            val psiPackage = facade.findPackage(pkg)
-            psiPackage != null && psiPackage.getClasses(scope).isNotEmpty()
-        }
+        return safeIndexCall(project) {
+            probes.any { fqn -> facade.findClass(fqn, scope) != null }
+        } ?: false
     }
 
     /**
      * Determines the corresponding jakarta import for a given javax import.
-     * Handles both regular imports (javax.persistence.Entity) and wildcard imports (javax.persistence.*).
-     *
-     * @param javaxImport The fully qualified javax import (may include .*)
-     * @return The corresponding jakarta import, or null if migration is not applicable
+     * Handles both regular imports and wildcard imports.
      */
-    fun toJakartaImport(javaxImport: String): String? {
-        val fqnWithoutWildcard = javaxImport.removeSuffix(".*")
-        if (!isMigratableImport(fqnWithoutWildcard)) {
-            return null
-        }
+    fun toJakartaImport(javaxImportRaw: String): String? {
+        val javaxImport = normalizeImportText(javaxImportRaw)
+        val base = javaxImport.removeSuffix(".*")
+
+        if (!isMigratableImport(base)) return null
+        if (!base.startsWith("javax.")) return null
+
+        // Keep wildcard if present
         return javaxImport.replaceFirst("javax.", "jakarta.")
     }
 
-    /**
-     * Result of a migration eligibility check.
-     */
     data class MigrationCheckResult(
         val canMigrate: Boolean,
         val jakartaImport: String?,
@@ -191,47 +223,35 @@ object JakartaClasspathChecker {
     )
 
     /**
-     * Performs a comprehensive check to determine if a javax import can be safely migrated.
-     *
-     * @param element A PSI element from the file
-     * @param javaxImport The fully qualified javax import to check
-     * @return A MigrationCheckResult with the migration eligibility and reason
+     * Comprehensive migration eligibility check:
+     * - allowlist match
+     * - jakarta target resolvable in module classpath
      */
-    fun checkMigrationEligibility(element: PsiElement, javaxImport: String): MigrationCheckResult {
-        // First check if this is a migratable javax package
+    fun checkMigrationEligibility(element: PsiElement, javaxImportRaw: String): MigrationCheckResult {
+        val javaxImport = normalizeImportText(javaxImportRaw)
+
         if (!isMigratableImport(javaxImport)) {
-            val reason = if (NON_MIGRATABLE_JAVAX_PREFIXES.any { prefix ->
-                    javaxImport == prefix || javaxImport.startsWith("$prefix.")
-                }) {
-                "This javax.* package remains unchanged in Jakarta EE 9+ and should not be migrated"
-            } else {
-                "This javax.* import is not recognized as a Jakarta EE migration target"
+            val base = javaxImport.removeSuffix(".*")
+            val reason = when {
+                isPrefixedByAny(base, NON_MIGRATABLE_JAVAX_PREFIXES) ->
+                    "Este pacote javax.* é Java SE / não migra em Jakarta EE 9+ (não sugira troca)."
+                else ->
+                    "Este javax.* não está na allowlist de migração para Jakarta EE."
             }
-            return MigrationCheckResult(canMigrate = false, jakartaImport = null, reason = reason)
+            return MigrationCheckResult(false, null, reason)
         }
 
-        // Calculate the target jakarta import
         val jakartaImport = toJakartaImport(javaxImport)
-            ?: return MigrationCheckResult(
-                canMigrate = false,
-                jakartaImport = null,
-                reason = "Could not determine jakarta equivalent"
-            )
+            ?: return MigrationCheckResult(false, null, "Não foi possível determinar o equivalente jakarta.*.")
 
-        // Check if the jakarta library is available in the classpath
         if (!isJakartaAvailable(element, jakartaImport)) {
             return MigrationCheckResult(
                 canMigrate = false,
                 jakartaImport = jakartaImport,
-                reason = "Jakarta library not found in module classpath. Add the corresponding Jakarta EE dependency first."
+                reason = "O alvo jakarta.* não resolve no classpath do módulo. Adicione a dependência Jakarta correspondente primeiro."
             )
         }
 
-        // All checks passed
-        return MigrationCheckResult(
-            canMigrate = true,
-            jakartaImport = jakartaImport,
-            reason = null
-        )
+        return MigrationCheckResult(true, jakartaImport, null)
     }
 }

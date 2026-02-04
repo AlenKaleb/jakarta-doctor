@@ -9,6 +9,7 @@ import com.intellij.ide.highlighter.JavaFileType
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiImportStatementBase
@@ -21,8 +22,8 @@ import org.jetbrains.kotlin.psi.KtImportDirective
 /**
  * Quick fix to replace a javax.* import with its jakarta.* equivalent.
  *
- * @param newImportRefRaw The target jakarta import reference
- * @param classpathWarning Whether the classpath check failed (jakarta not found in module)
+ * @param newImportRefRaw The target jakarta import reference (may include .* and Kotlin alias "as")
+ * @param classpathWarning Whether the classpath check failed at inspection time
  */
 class ReplaceImportQuickFix(
     private val newImportRefRaw: String,
@@ -30,22 +31,36 @@ class ReplaceImportQuickFix(
 ) : LocalQuickFix {
 
     override fun getFamilyName(): String = "Migrar imports javax→jakarta"
+
     override fun getName(): String {
         return if (classpathWarning) {
-            "Migrar import para $newImportRefRaw (Jakarta não encontrado no classpath)"
+            "Migrate import to $newImportRefRaw (Jakarta not found in classpath)"
         } else {
-            "Migrar import para $newImportRefRaw"
+            "Migrate import to $newImportRefRaw"
         }
     }
+
     override fun startInWriteAction(): Boolean = false
 
     override fun generatePreview(project: Project, previewDescriptor: ProblemDescriptor): IntentionPreviewInfo {
-        val ok = applyInternal(project, previewDescriptor, enforceLicense = false, notifyUnlicensed = false, checkClasspath = false)
+        val ok = applyInternal(
+            project = project,
+            descriptor = previewDescriptor,
+            enforceLicense = false,
+            notifyUnlicensed = false,
+            checkClasspath = false
+        )
         return if (ok) IntentionPreviewInfo.DIFF else IntentionPreviewInfo.EMPTY
     }
 
     override fun applyFix(project: Project, descriptor: ProblemDescriptor) {
-        applyInternal(project, descriptor, enforceLicense = true, notifyUnlicensed = true, checkClasspath = true)
+        applyInternal(
+            project = project,
+            descriptor = descriptor,
+            enforceLicense = true,
+            notifyUnlicensed = true,
+            checkClasspath = true
+        )
     }
 
     private fun applyInternal(
@@ -65,48 +80,64 @@ class ReplaceImportQuickFix(
                 if (notifyUnlicensed) gate.notifyUnlicensedOnce()
                 return false
             }
-            // UNKNOWN -> deixa passar
         }
 
         val normalized = normalizeImportRef(newImportRefRaw)
         if (normalized.isBlank()) return false
 
-        // ✅ Re-check classpath before applying the fix to ensure jakarta is available
-        if (checkClasspath && !JakartaClasspathChecker.isJakartaAvailable(element, normalized)) {
+        // Se pediram check de classpath, não dá pra afirmar nada durante indexing.
+        if (checkClasspath && DumbService.isDumb(project)) {
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup("JakartaDoctor")
+                .createNotification(
+                    "Indexação em andamento",
+                    "O IDE está indexando. Não é possível validar o classpath agora. Tente novamente em alguns segundos.",
+                    NotificationType.INFORMATION
+                )
+                .notify(project)
+            return false
+        }
+
+        // Preserva .* e alias conforme o import ORIGINAL (Java/Kotlin)
+        val effectiveRef = when (element) {
+            is PsiImportStatementBase -> {
+                if (element is PsiImportStaticStatement) return false // não mexe em static import
+                val base = normalized.split(" as ", limit = 2)[0].trim() // Java não tem alias
+                if (element.isOnDemand && !base.endsWith(".*")) "$base.*" else base
+            }
+
+            is KtImportDirective -> {
+                val (rawBase, alias) = splitAlias(normalized)
+                val base = if (element.isAllUnder && !rawBase.endsWith(".*")) "$rawBase.*" else rawBase
+                if (alias != null) "$base as $alias" else base
+            }
+
+            else -> normalized
+        }
+
+        // Re-check classpath antes de aplicar fix
+        if (checkClasspath && !JakartaClasspathChecker.isJakartaAvailable(element, effectiveRef)) {
             NotificationGroupManager.getInstance()
                 .getNotificationGroup("JakartaDoctor")
                 .createNotification(
                     "Jakarta não encontrado no classpath",
-                    "O pacote '$normalized' não foi encontrado no classpath do módulo. " +
-                            "Adicione a dependência Jakarta EE correspondente antes de migrar.",
+                    "O pacote '$effectiveRef' não foi encontrado no classpath do módulo. " +
+                            "Adicione a dependência Jakarta correspondente antes de migrar.",
                     NotificationType.WARNING
                 )
                 .notify(project)
             return false
         }
 
-        // ✅ Preserva .* conforme o import ORIGINAL (Java/Kotlin)
-        val effectiveRef = when (element) {
-            is PsiImportStatementBase -> {
-                val base = normalized.split(" as ", limit = 2)[0].trim() // Java não usa alias
-                if (element.isOnDemand && !base.endsWith(".*")) "$base.*" else base
-            }
-            is KtImportDirective -> {
-                if (element.isAllUnder && !normalized.endsWith(".*")) "$normalized.*" else normalized
-            }
-            else -> normalized
-        }
-
         var changed = false
-
         WriteCommandAction
             .writeCommandAction(project, file)
             .withName("Jakarta Doctor: migrate import")
             .run<RuntimeException> {
                 changed = when (element) {
                     is PsiImportStatementBase -> replaceJavaImport(project, element, effectiveRef)
-                    is KtImportDirective      -> replaceKotlinImport(project, element, effectiveRef)
-                    else                      -> false
+                    is KtImportDirective -> replaceKotlinImport(project, element, effectiveRef)
+                    else -> false
                 }
             }
 
@@ -114,16 +145,13 @@ class ReplaceImportQuickFix(
     }
 
     private fun replaceJavaImport(project: Project, element: PsiImportStatementBase, newRefAny: String): Boolean {
-        // Ignora static import (não mexe nisso)
         if (element is PsiImportStaticStatement) return false
 
-        // Java não tem alias "as". Se vier, corta.
         val newRef = newRefAny.split(" as ", limit = 2)[0].trim()
         if (newRef.isBlank()) return false
 
         val currentBase = element.importReference?.qualifiedName ?: return false
         val currentRendered = if (element.isOnDemand) "$currentBase.*" else currentBase
-
         if (currentRendered == newRef) return false
 
         val dummyText = """
@@ -150,7 +178,6 @@ class ReplaceImportQuickFix(
             append(if (element.isAllUnder) "$currentBase.*" else currentBase)
             element.aliasName?.let { append(" as ").append(it) }
         }
-
         if (currentRendered == newRef) return false
 
         val dummyText = """
@@ -176,7 +203,15 @@ class ReplaceImportQuickFix(
         ref.trim()
             .removePrefix("import")
             .trim()
+            .removePrefix("static")
+            .trim()
             .removeSuffix(";")
             .trim()
 
+    private fun splitAlias(s: String): Pair<String, String?> {
+        val parts = s.split(" as ", limit = 2)
+        val base = parts[0].trim()
+        val alias = parts.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+        return base to alias
+    }
 }
