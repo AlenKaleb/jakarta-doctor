@@ -167,7 +167,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📋 Changelog
 
-### Version 2026.1.0 (Initial Release)
+### Version 2026.2.0 (Check if classpath Jakarta exists in project)
 
 - ✨ Initial release
 - ✅ Code inspection for `javax.*` imports

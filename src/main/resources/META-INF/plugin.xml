@@ -5,21 +5,21 @@
 
     <idea-version since-build="243.0" until-build="243.*"/>
 
-    <version>2026.1.0</version>
+    <version>2026.2.0</version>
 
-    <description><![CDATA[Spring Boot 3 Migration Assistant. Inspeções e ações em lote para migrar javax → jakarta, checar configs e aplicar quick-fixes.
+    <description><![CDATA[Spring Boot 3 Migration Assistant. Inspections and batch actions to migrate javax → jakarta, check configurations and apply quick-fixes.
 <br/>
 <ul>
-  <li>Inspeções: javax → jakarta</li>
-  <li>Checks de configs</li>
-  <li>Warnings e quick-fixes</li>
+<li>Inspections: javax → jakarta</li>
+<li>Configuration Checks</li>
+<li>Warnings and Quick-Fixes</li>
 </ul>
 ]]></description>
 
     <change-notes><![CDATA[
-<p><b>2026.1.0</b></p>
+<p><b>2026.2.0</b></p>
 <ul>
-  <li>Initial release: inspection + quick-fix + batch action + migration report.</li>
+<li>Initial release: inspection + quick-fix + batch action + migration report.</li>
 </ul>
 ]]></change-notes>
 

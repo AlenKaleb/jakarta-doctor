@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.alenkaleb.jakartadoctor"
-version = "2026.1.0"
+version = "2026.2.0"
 
 repositories {
     mavenCentral()

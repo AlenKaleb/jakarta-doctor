@@ -1,6 +1,8 @@
 package com.alenkaleb.jakartadoctor.report
 
+import com.alenkaleb.jakartadoctor.util.JakartaClasspathChecker
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
@@ -15,6 +17,14 @@ import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
+/**
+ * Generates migration reports for javax.* to jakarta.* migrations.
+ *
+ * Counts only imports eligible for migration:
+ * - Only migratable javax packages (javax.persistence, javax.servlet, etc.)
+ * - Excludes non-migratable packages (javax.sql, Java SE javax.xml.*, etc.)
+ * - Ignores Java static imports (MVP)
+ */
 object JakartaReportGenerator {
 
     data class PkgStats(var files: Int = 0, var imports: Int = 0)
@@ -26,12 +36,6 @@ object JakartaReportGenerator {
         val byPackage: Map<String, PkgStats>
     )
 
-    /**
-     * Conta imports que COMEÇAM com "javax." em arquivos Java/Kotlin dentro dos content roots.
-     * - Java: conta "import javax.foo.Bar;" e "import javax.foo.*;"
-     * - Kotlin: conta "import javax.foo.Bar" e "import javax.foo.*"
-     * - Ignora static import em Java (MVP)
-     */
     fun generate(project: Project): ReportResult {
         val files = collectCandidateFiles(project)
         val psiManager = PsiManager.getInstance(project)
@@ -41,18 +45,22 @@ object JakartaReportGenerator {
         var filesWithFindings = 0
 
         for (vf in files) {
-            val psi = psiManager.findFile(vf) ?: continue
+            val res = ReadAction.compute<Pair<String, Int>?, RuntimeException> {
+                val psi = psiManager.findFile(vf) ?: return@compute null
 
-            val (pkg, count) = when (psi) {
-                is PsiJavaFile -> psi.packageName.ifBlank { "<default>" } to countJavaImports(psi)
-                is KtFile -> psi.packageFqName.asString().ifBlank { "<default>" } to countKotlinImports(psi)
-                else -> "<unknown>" to 0
-            }
+                val pkgAndCount = when (psi) {
+                    is PsiJavaFile -> psi.packageName.ifBlank { "<default>" } to countJavaImports(psi)
+                    is KtFile      -> psi.packageFqName.asString().ifBlank { "<default>" } to countKotlinImports(psi)
+                    else           -> "<unknown>" to 0
+                }
 
+                pkgAndCount
+            } ?: continue
+
+            val (pkg, count) = res
             if (count > 0) {
                 filesWithFindings++
                 totalImports += count
-
                 val stat = byPkg.getOrPut(pkg) { PkgStats() }
                 stat.files++
                 stat.imports += count
@@ -78,8 +86,7 @@ object JakartaReportGenerator {
     }
 
     /**
-     * Escreve na raiz do projeto usando VFS + WriteAction (pra aparecer/abrir sempre).
-     * Retorna o VirtualFile pronto pra abrir.
+     * Writes report file to project root using VFS + WriteAction.
      */
     fun writeToProjectRoot(project: Project, markdown: String): VirtualFile {
         val basePath = project.basePath ?: error("project.basePath é null")
@@ -103,27 +110,33 @@ object JakartaReportGenerator {
     }
 
     private fun collectCandidateFiles(project: Project): List<VirtualFile> {
-        val index = ProjectFileIndex.getInstance(project)
         val roots = ProjectRootManager.getInstance(project).contentRoots.toList()
 
-        val out = ArrayList<VirtualFile>(2048)
-
+        // 1) rough: só por extensão (barato)
+        val rough = ArrayList<VirtualFile>(2048)
         for (root in roots) {
             VfsUtilCore.iterateChildrenRecursively(root, null) { vf ->
-                if (vf.isDirectory) return@iterateChildrenRecursively true
-
-                val ext = vf.extension?.lowercase()
-                if (ext != "java" && ext != "kt" && ext != "kts") return@iterateChildrenRecursively true
-
-                // ignora fora do content root (ex.: build, out, caches)
-                if (!index.isInContent(vf)) return@iterateChildrenRecursively true
-
-                // filtro rápido por texto
-                val text = runCatching { VfsUtilCore.loadText(vf) }.getOrNull()
-                if (text != null && text.contains("javax.")) out.add(vf)
-
+                if (!vf.isDirectory) {
+                    val ext = vf.extension?.lowercase()
+                    if (ext == "java" || ext == "kt" || ext == "kts") rough.add(vf)
+                }
                 true
             }
+        }
+        if (rough.isEmpty()) return emptyList()
+
+        // 2) filtra por content root em ReadAction
+        val inContent = ReadAction.compute<List<VirtualFile>, RuntimeException> {
+            val index = ProjectFileIndex.getInstance(project)
+            rough.filter { vf -> index.isInContent(vf) }
+        }
+        if (inContent.isEmpty()) return emptyList()
+
+        // 3) filtro rápido por texto
+        val out = ArrayList<VirtualFile>(inContent.size)
+        for (vf in inContent) {
+            val text = runCatching { VfsUtilCore.loadText(vf) }.getOrNull()
+            if (text != null && text.contains("javax.")) out.add(vf)
         }
 
         return out
@@ -136,8 +149,9 @@ object JakartaReportGenerator {
         // ✅ só imports normais (não inclui import static)
         for (stmt in importList.importStatements) {
             val q = stmt.importReference?.qualifiedName ?: continue
-            val rendered = if (stmt.isOnDemand) "$q.*" else q
+            if (!JakartaClasspathChecker.isMigratableImport(q)) continue
 
+            val rendered = if (stmt.isOnDemand) "$q.*" else q
             if (rendered.startsWith("javax.")) hits++
         }
         return hits
@@ -149,8 +163,9 @@ object JakartaReportGenerator {
 
         for (imp in importList.imports) {
             val q = imp.importedFqName?.asString() ?: continue
-            val rendered = if (imp.isAllUnder) "$q.*" else q
+            if (!JakartaClasspathChecker.isMigratableImport(q)) continue
 
+            val rendered = if (imp.isAllUnder) "$q.*" else q
             if (rendered.startsWith("javax.")) hits++
         }
         return hits
@@ -170,13 +185,13 @@ object JakartaReportGenerator {
         appendLine("- Project: `$projectName`")
         appendLine("- Generated at: `$now`")
         appendLine("- Scanned files: `$scannedFiles`")
-        appendLine("- Files with javax imports: `$filesWithFindings`")
-        appendLine("- Total javax imports found: `$totalImports`")
+        appendLine("- Files with migratable javax imports: `$filesWithFindings`")
+        appendLine("- Total migratable javax imports found: `$totalImports`")
         appendLine()
 
         appendLine("## By package")
         appendLine()
-        appendLine("| Package | Files | javax imports |")
+        appendLine("| Package | Files | Migratable javax imports |")
         appendLine("|---|---:|---:|")
 
         val sorted = byPackage.toList().sortedByDescending { it.second.imports }
@@ -186,8 +201,10 @@ object JakartaReportGenerator {
 
         appendLine()
         appendLine("## Notes")
-        appendLine("- Counts are based on `import` statements starting with `javax.`.")
+        appendLine("- Counts are based on `import` statements eligible for javax→jakarta migration.")
+        appendLine("- Only migratable packages are counted (javax.persistence, javax.servlet, etc.).")
+        appendLine("- Non-migratable packages (javax.sql, Java SE javax.xml.*, etc.) are excluded.")
         appendLine("- Star imports (`.*`) are counted as 1 import.")
-        appendLine("- Static imports may be ignored (MVP).")
+        appendLine("- Static imports are ignored.")
     }
 }
