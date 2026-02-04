@@ -17,7 +17,7 @@
 ]]></description>
 
     <change-notes><![CDATA[
-<p><b>2026.1.0</b></p>
+<p><b>2026.2.0</b></p>
 <ul>
 <li>Initial release: inspection + quick-fix + batch action + migration report.</li>
 </ul>
