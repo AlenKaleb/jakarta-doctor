@@ -116,6 +116,6 @@ class JakartaImportInspection : AbstractBaseUastLocalInspectionTool() {
         scope: GlobalSearchScope
     ): Boolean {
         val pkg = facade.findPackage(packageName) ?: return false
-        return pkg.getClasses(scope).isNotEmpty() || pkg.getSubPackages(scope).isNotEmpty()
+        return pkg.getClasses(scope).isNotEmpty()
     }
 }
