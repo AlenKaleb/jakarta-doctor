@@ -102,12 +102,7 @@ class JakartaImportInspection : AbstractBaseUastLocalInspectionTool() {
             return packageHasTypes(facade, base, scope)
         }
 
-        if (facade.findClass(base, scope) != null) return true
-
-        val packageName = base.substringBeforeLast('.', "")
-        if (packageName.isBlank()) return false
-
-        return packageHasTypes(facade, packageName, scope)
+        return facade.findClass(base, scope) != null
     }
 
     private fun packageHasTypes(
