@@ -25,51 +25,25 @@ class JakartaImportInspection : AbstractBaseUastLocalInspectionTool() {
 
     companion object {
         /**
-         * Map of javax packages that were migrated to jakarta in Jakarta EE 9+.
-         * Extended to include more packages that are safe to migrate.
-         */
-        private val javaxToJakarta = mapOf(
-            "javax.persistence" to "jakarta.persistence",
-            "javax.validation" to "jakarta.validation",
-            "javax.servlet" to "jakarta.servlet",
-            "javax.annotation" to "jakarta.annotation",
-            "javax.ws.rs" to "jakarta.ws.rs",
-            "javax.inject" to "jakarta.inject",
-            "javax.enterprise" to "jakarta.enterprise",
-            "javax.json" to "jakarta.json",
-            "javax.websocket" to "jakarta.websocket",
-            "javax.faces" to "jakarta.faces",
-            "javax.mail" to "jakarta.mail",
-            "javax.jms" to "jakarta.jms",
-            "javax.batch" to "jakarta.batch",
-            "javax.resource" to "jakarta.resource",
-            "javax.transaction" to "jakarta.transaction",
-            "javax.ejb" to "jakarta.ejb",
-            "javax.activation" to "jakarta.activation",
-            "javax.el" to "jakarta.el",
-            "javax.interceptor" to "jakarta.interceptor",
-            "javax.security.enterprise" to "jakarta.security.enterprise"
-        )
-
-        /**
          * Suggests a jakarta equivalent for a given javax import, if applicable.
+         * Uses the centralized migratable packages list from JakartaClasspathChecker.
          *
          * @param importText The fully qualified import (possibly with Kotlin alias)
          * @return The suggested jakarta import, or null if migration is not applicable
          */
         fun suggest(importText: String): String? {
             val (raw, alias) = importText.split(" as ", limit = 2).let { it[0] to it.getOrNull(1) }
+            val fqnWithoutWildcard = raw.removeSuffix(".*")
 
-            // First check if this is a non-migratable javax package
-            if (!JakartaClasspathChecker.isMigratableImport(raw.removeSuffix(".*"))) {
+            // Check if this is a migratable javax package
+            if (!JakartaClasspathChecker.isMigratableImport(fqnWithoutWildcard)) {
                 return null
             }
 
-            val hit = javaxToJakarta.entries.firstOrNull { (from, _) ->
-                raw == from || raw.startsWith("$from.") || raw == "$from.*"
-            } ?: return null
+            // Use the centralized conversion method
+            val migrated = JakartaClasspathChecker.toJakartaImport(raw)
+                ?: return null
 
-            val migrated = raw.replaceFirst(hit.key, hit.value)
             return if (alias != null) "$migrated as $alias" else migrated
         }
 

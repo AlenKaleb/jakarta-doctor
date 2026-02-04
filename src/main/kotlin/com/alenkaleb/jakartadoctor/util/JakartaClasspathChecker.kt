@@ -168,12 +168,14 @@ object JakartaClasspathChecker {
 
     /**
      * Determines the corresponding jakarta import for a given javax import.
+     * Handles both regular imports (javax.persistence.Entity) and wildcard imports (javax.persistence.*).
      *
-     * @param javaxImport The fully qualified javax import
+     * @param javaxImport The fully qualified javax import (may include .*)
      * @return The corresponding jakarta import, or null if migration is not applicable
      */
     fun toJakartaImport(javaxImport: String): String? {
-        if (!isMigratableImport(javaxImport)) {
+        val fqnWithoutWildcard = javaxImport.removeSuffix(".*")
+        if (!isMigratableImport(fqnWithoutWildcard)) {
             return null
         }
         return javaxImport.replaceFirst("javax.", "jakarta.")
